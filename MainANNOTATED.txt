@@ -1,0 +1,1136 @@
+; ////////////////////////////////////////////////////////////////////////////////////////////
+;  _____                      _                  __ _  _       __  __           _____ __  __ 
+; |  __ \                    (_)                / /| || |     |  \/  |   /\    / ____|  \/  |
+; | |__) |__  _ __   __ _     _ _ __     __  __/ /_| || |_    | \  / |  /  \  | (___ | \  / |
+; |  ___/ _ \| '_ \ / _` |   | | '_ \    \ \/ / '_ \__   _|   | |\/| | / /\ \  \___ \| |\/| |
+; | |  | (_) | | | | (_| |   | | | | |    >  <| (_) | | |     | |  | |/ ____ \ ____) | |  | |
+; |_|   \___/|_| |_|\__, |   |_|_| |_|   /_/\_\\___/  |_|     |_|  |_/_/    \_\_____/|_|  |_|
+;                    __/ |                                                                   
+;                   |___/                                                                    
+; ////////////////////////////////////////////////////////////////////////////////////////////
+
+; This program is a recreation of Pong in x64 Assembly language, using the MASM (Microsoft Macro Assembler).
+; Created in Visual Studio 2022 with dependencies:
+
+; ----- Built-in -----
+; kernel32.lib - Import library for kernel32.dll, used for terminating process & getting handle for executable
+; user32.lib - Import library for User32.dll, used for window management; handling messages; processing user input (also MessageBoxes for debugging)
+; gdi32.lib - Win32 Graphics Device Interface, used for rendering text and drawings
+; ----- Additional -----
+; winmm.lib - Playing .wav files asychronously, used for game audio
+
+
+; =============================================================================
+;                        EXTERNAL FUNCTION DECLARATIONS
+; =============================================================================
+
+; ----- user32.lib/dll ----- 
+extrn RegisterClassExW: proc   ; Registers a window class for subsequent use in CreateWindowExW.
+extrn CreateWindowExW: proc    ; Creates a new window with extended styles.
+extrn ShowWindow: proc         ; Sets the visibility state of a window (show, hide, minimize, maximize).
+extrn UpdateWindow: proc       ; Forces a window to repaint its client area immediately.
+extrn GetMessageW: proc        ; Retrieves messages from the application’s message queue.
+extrn TranslateMessage: proc   ; Converts keyboard input messages into appropriate character messages.
+extrn DispatchMessageW: proc   ; Sends a message to the appropriate window procedure.
+extrn DefWindowProcW: proc     ; Default message handler for windows.
+extrn PostQuitMessage: proc    ; Signals the application to close by placing a WM_QUIT message in the queue.
+extrn GetAsyncKeyState: proc   ; Checks if a specific key is pressed asynchronously.
+extrn SetTimer: proc           ; Creates a system timer that triggers WM_TIMER messages.
+extrn KillTimer: proc          ; Stops a timer created by SetTimer.
+extrn LoadCursorW: proc        ; Loads a predefined or custom cursor from system resources.
+extrn InvalidateRect: proc     ; Marks a window’s rectangle as invalid, forcing a repaint.
+
+; ----- gdi32.lib/dll ----- 
+extrn BeginPaint: proc         ; Prepares the window for painting and retrieves a device context (DC).
+extrn EndPaint: proc           ; Cleans up painting and releases the device context.
+extrn FillRect: proc           ; Fills a rectangle with a solid color brush.
+extrn CreateSolidBrush: proc   ; Creates a brush with a solid color for painting.
+extrn DeleteObject: proc       ; Deletes a GDI object, such as a brush or font.
+extrn Rectangle: proc          ; Draws a rectangle using the current brush and pen.
+extrn TextOutA: proc           ; Outputs a string at specified coordinates.
+extrn SetTextColor: proc       ; Sets the color used for text rendering.
+extrn SetBkMode: proc          ; Sets the background mode for text (transparent or opaque).
+extrn CreateFontA: proc        ; Creates a font object with specified attributes.
+extrn SelectObject: proc       ; Selects a GDI object (brush, pen, font) into a device context.
+extrn AddFontResourceA: proc   ; Adds a font file to the system font table.
+extrn RemoveFontResourceA: proc ; Removes a previously added font file from the system.
+
+; ----- kernel32.lib/dll ----- 
+extrn ExitProcess: proc        ; Terminates the current process and cleans up resources.
+extrn GetModuleHandleW: proc   ; Retrieves a handle to a loaded module (e.g., the executable or DLL).
+
+; ----- winmm.lib/dll ----- 
+extrn PlaySoundA: proc         ; Plays a sound file or system sound asynchronously.
+
+; =============================================================================
+;                            PONG GAME - MASM 64-bit
+; =============================================================================
+.data
+    ; -------------------------
+    ; Window class and title strings (Unicode null-terminated)
+    ; -------------------------
+    className dw 'P','O','N','G','C','l','a','s','s', 0        ; Window class name: "PONGClass"
+    windowTitle dw 'P','O','N','G',' ','G','a','m','e', 0      ; Window title: "PONG Game"
+
+    ; -------------------------
+    ; Game state constants and variable
+    ; -------------------------
+    GAME_STATE_HOME equ 0                                     ; State: Main menu / start screen
+    GAME_STATE_PLAYING equ 1                                  ; State: Game is actively playing
+    GAME_STATE_WIN equ 2                                      ; State: Win screen is shown
+    gameState dq GAME_STATE_HOME                              ; Current game state (initialized to HOME)
+
+    ; -------------------------
+    ; Win screen timer settings
+    ; -------------------------
+    WIN_TIMER_ID equ 2                                        ; Timer ID used for win screen duration
+    WIN_DISPLAY_DURATION equ 3000                             ; Time (in ms) to show win screen (3 seconds)
+
+    ; -------------------------
+    ; Window dimensions
+    ; -------------------------
+    WINDOW_WIDTH equ 800                                      ; Width of the game window in pixels
+    WINDOW_HEIGHT equ 600                                     ; Height of the game window in pixels
+
+    ; -------------------------
+    ; Paddle properties
+    ; -------------------------
+    PADDLE_WIDTH equ 20                                       ; Width of the paddles in pixels
+    PADDLE_HEIGHT equ 100                                     ; Height of the paddles in pixels
+    PADDLE_SPEED equ 5                                        ; Paddle movement speed in pixels per frame
+    paddle1Y dq 250                                            ; Initial Y position of Player 1's paddle
+    paddle2Y dq 250                                            ; Initial Y position of Player 2's paddle
+
+    ; -------------------------
+    ; Ball properties
+    ; -------------------------
+    BALL_SIZE equ 15                                          ; Width/Height of the ball (square)
+    BALL_SPEED equ 5                                          ; Initial speed of the ball in both axes
+    ballX dq 400                                              ; Initial X position of the ball (center)
+    ballY dq 300                                              ; Initial Y position of the ball (center)
+    ballVelX dq BALL_SPEED                                    ; Initial horizontal velocity (positive = right)
+    ballVelY dq BALL_SPEED                                    ; Initial vertical velocity (positive = down)
+
+    ; -------------------------
+    ; Game update timer
+    ; -------------------------
+    TIMER_ID equ 1                                            ; Main game loop timer ID (e.g., 60 FPS)
+
+    ; -------------------------
+    ; Brush color constants (RGB)
+    ; -------------------------
+    BLACK_COLOR equ 000000h                                   ; RGB black
+    WHITE_COLOR equ 0FFFFFFh                                  ; RGB white
+    hBlackBrush dq 0                                          ; Handle to black brush (GDI object)
+    hWhiteBrush dq 0                                          ; Handle to white brush (GDI object)
+
+    ; -------------------------
+    ; Scoring and win tracking
+    ; -------------------------
+    score1 dq 0                                               ; Player 1 score
+    score2 dq 0                                               ; Player 2 score
+    winnerPlayer dq 0                                         ; 1 or 2, based on who won the match
+
+    ; -------------------------
+    ; Background music state
+    ; -------------------------
+    musicPlaying dq 0                                         ; Boolean flag (0 = off, 1 = playing)
+
+    ; -------------------------
+    ; Window and font handles
+    ; -------------------------
+    hWnd dq 0                                                 ; Handle to the main game window
+    hInstance dq 0                                            ; Handle to application instance
+    hFont dq 0                                                ; Handle to the custom font object
+
+    ; -------------------------
+    ; Score strings for drawing numbers
+    ; Each string is a null-terminated ASCII digit - this could be more compact
+    ; -------------------------
+    score_strings:
+        db "0", 0
+        db "1", 0
+        db "2", 0
+        db "3", 0
+        db "4", 0
+        db "5", 0               ;<== Goes up to a maximuum score of 9, would have to define more strings for higher score
+        db "6", 0
+        db "7", 0
+        db "8", 0
+        db "9", 0
+
+    ; -------------------------
+    ; Format string for printf-style display (if needed)
+    ; -------------------------
+    format_str db "%d", 0                                     ; Format string for printing integer scores
+
+    ; -------------------------
+    ; Text resources for game UI
+    ; -------------------------
+    player1WinText db "Player  1  Wins!", 0                   ; Text shown when Player 1 wins
+    player2WinText db "Player  2  Wins!", 0                   ; Text shown when Player 2 wins
+    pressSpaceText db "Press  SPACE  to  continue", 0         ; Prompt after game ends
+    PongText db "Pong", 0                                     ; Title text
+    playText db "Press  SPACE  to  play", 0                   ; Start game prompt
+
+    ; -------------------------
+    ; File paths for game sounds (must exist at runtime as they are hardcoded)
+    ; -------------------------
+    PaddleCollisionSound db "Sounds\PaddleCollisionSound.wav", 0
+    WallCollisionSound db "Sounds\WallCollisionSound.wav", 0
+    ResetBallSound db "Sounds\ResetBallSound.wav", 0
+    BackgroundMusic db "Sounds\BackgroundMusic.wav", 0
+    WinSound db "Sounds\WinSound.wav", 0
+
+    ; -------------------------
+    ; Custom arcade font file and name
+    ; -------------------------
+    ArcadeFont db "Fonts\ARCADECLASSIC.ttf", 0
+    fontFaceName db "ArcadeClassic", 0                        ; Face name passed to CreateFontA
+
+    ; -------------------------
+    ; Message structure variables for GetMessage loop
+    ; Equivalent to MSG struct in WinAPI
+    ; -------------------------
+    msg_hwnd dq 0                                             ; HWND
+    msg_message dq 0                                          ; UINT message ID
+    msg_wParam dq 0                                           ; WPARAM
+    msg_lParam dq 0                                           ; LPARAM
+    msg_time dq 0                                             ; Timestamp of the message
+    msg_pt_x dq 0                                             ; Cursor X position
+    msg_pt_y dq 0                                             ; Cursor Y position
+    msg_private dq 0                                          ; Reserved/private field
+
+    ; -------------------------
+    ; PAINTSTRUCT fields for BeginPaint/EndPaint
+    ; -------------------------
+    ps_hdc dq 0                                               ; Handle to device context (HDC)
+    ps_fErase dd 0                                            ; Erase background flag
+    ps_rcPaint_left dd 0                                      ; Paint rectangle left
+    ps_rcPaint_top dd 0                                       ; Paint rectangle top
+    ps_rcPaint_right dd 0                                     ; Paint rectangle right
+    ps_rcPaint_bottom dd 0                                    ; Paint rectangle bottom
+    ps_fRestore dd 0                                          ; Restore flag
+    ps_fIncUpdate dd 0                                        ; Incremental update flag
+    ps_rgbReserved db 32 dup(0)                               ; Reserved (must be 0)
+
+    ; -------------------------
+    ; Window class registration structure (WNDCLASSEXW)
+    ; -------------------------
+    wc_cbSize dd 80                                           ; Size of WNDCLASSEXW struct
+    wc_style dd 3                                             ; Style flags (CS_HREDRAW | CS_VREDRAW)
+    wc_lpfnWndProc dq WindowProc                              ; Pointer to window procedure function
+    wc_cbClsExtra dd 0                                        ; Extra class bytes
+    wc_cbWndExtra dd 0                                        ; Extra window bytes
+    wc_hInstance dq 0                                         ; Application instance handle
+    wc_hIcon dq 0                                             ; Large icon handle
+    wc_hCursor dq 0                                           ; Cursor handle
+    wc_hbrBackground dq 0                                     ; Background brush
+    wc_lpszMenuName dq 0                                      ; No menu
+    wc_lpszClassName dq offset className                      ; Pointer to class name string
+    wc_hIconSm dq 0                                           ; Small icon handle
+
+
+; =============================================================================
+;                             MAIN LOGIC PROCEDURE
+; =============================================================================
+.code
+main PROC
+    ; -------------------------
+    ; Function prologue - set up stack frame
+    ; -------------------------
+    push rbp                             ; Save the previous base pointer
+    mov rbp, rsp                         ; Set base pointer to current stack pointer
+    sub rsp, 80h                         ; Allocate 128 bytes on the stack for local usage
+
+    ; -------------------------
+    ; Load the current module handle
+    ; -------------------------
+    mov rcx, 0                           ; NULL parameter = get handle of current process's module
+    call GetModuleHandleW                ; Returns module handle in RAX
+    mov hInstance, rax                   ; Save module handle to global variable
+    mov wc_hInstance, rax                ; Assign to window class's hInstance field
+
+    ; -------------------------
+    ; Load standard arrow cursor (IDC_ARROW = 32512)
+    ; -------------------------
+    mov rcx, 0                           ; NULL = use system default cursor
+    mov rdx, 32512                       ; Predefined cursor ID for arrow
+    call LoadCursorW                     ; Loads the cursor resource
+    mov wc_hCursor, rax                  ; Store the handle in window class
+
+    ; -------------------------
+    ; Create black background brush for game drawing
+    ; -------------------------
+    mov ecx, BLACK_COLOR                 ; Pass RGB value (usually 0x000000)
+    call CreateSolidBrush                ; Creates a solid color brush
+    mov hBlackBrush, rax                 ; Save brush handle for cleanup
+    mov wc_hbrBackground, rax            ; Assign as window class background (can be NULL if using custom drawing)
+
+    ; -------------------------
+    ; Create white brush for text or elements
+    ; -------------------------
+    mov ecx, WHITE_COLOR                 ; Pass RGB value (usually 0xFFFFFF)
+    call CreateSolidBrush                ; Create white brush
+    mov hWhiteBrush, rax                 ; Save brush handle for later use
+
+    ; -------------------------
+    ; Load custom arcade font from system (font file must be in working directory)
+    ; -------------------------
+    lea rcx, ArcadeFont                  ; Pointer to font file name (e.g., "arcade.ttf")
+    call AddFontResourceA                ; Add the font to the system temporarily
+
+    ; -------------------------
+    ; Create the font object for in-game text rendering
+    ; -------------------------
+    mov rcx, 48                          ; Height of font in logical units (48 px)
+    mov rdx, 0                           ; Width = 0 means system chooses best match
+    mov r8, 0                            ; Escapement = 0 (angle of text)
+    mov r9, 0                            ; Orientation = 0
+    mov qword ptr [rsp+20h], 400       ; Weight = 400 (normal), 700 = bold
+    mov qword ptr [rsp+28h], 0         ; Italic = FALSE
+    mov qword ptr [rsp+30h], 0         ; Underline = FALSE
+    mov qword ptr [rsp+38h], 0         ; Strikeout = FALSE
+    mov qword ptr [rsp+40h], 0         ; Charset = DEFAULT_CHARSET
+    mov qword ptr [rsp+48h], 0         ; Output precision = OUT_DEFAULT_PRECIS
+    mov qword ptr [rsp+50h], 0         ; Clip precision = CLIP_DEFAULT_PRECIS
+    mov qword ptr [rsp+58h], 0         ; Quality = DEFAULT_QUALITY
+    mov qword ptr [rsp+60h], 0         ; Pitch and family = DEFAULT_PITCH
+    lea rax, fontFaceName              ; Pointer to font face string (e.g., "Arcade Classic")
+    mov qword ptr [rsp+68h], rax       ; Pass font face name
+    call CreateFontA                   ; Create the actual font
+    mov hFont, rax                     ; Store font handle for later use
+
+    ; -------------------------
+    ; Register window class with Windows API
+    ; -------------------------
+    lea rcx, wc_cbSize                   ; Pointer to WNDCLASSEXW structure
+    call RegisterClassExW                ; Register the window class
+    test rax, rax                        ; Check if registration was successful
+    jz exit_program                      ; If failed (RAX = 0), exit
+
+    ; -------------------------
+    ; Create the main application window
+    ; -------------------------
+    mov rcx, 0                           ; dwExStyle = 0 (no extended window styles)
+    lea rdx, className                   ; Class name registered above
+    lea r8, windowTitle                  ; Window title string
+    mov r9, 0CF0000h                     ; dwStyle = WS_OVERLAPPEDWINDOW (standard window)
+    mov qword ptr [rsp+20h], 100         ; X position of window
+    mov qword ptr [rsp+28h], 100         ; Y position
+    mov qword ptr [rsp+30h], WINDOW_WIDTH + 16          ; Width (adds border)
+    mov qword ptr [rsp+38h], WINDOW_HEIGHT + 39         ; Height (adds title bar, frame)
+    mov qword ptr [rsp+40h], 0           ; No parent window
+    mov qword ptr [rsp+48h], 0           ; No menu
+    mov rax, hInstance
+    mov qword ptr [rsp+50h], rax         ; Pass instance handle
+    mov qword ptr [rsp+58h], 0           ; No additional parameters
+    call CreateWindowExW                 ; Create the window
+    test rax, rax                        ; Check if window creation succeeded
+    jz exit_program                      ; Exit if handle is NULL
+    mov hWnd, rax                        ; Save window handle
+
+    ; -------------------------
+    ; Show and update the window
+    ; -------------------------
+    mov rcx, rax                         ; Window handle
+    mov rdx, 1                           ; SW_SHOWNORMAL = show normally
+    call ShowWindow                      ; Display window on screen
+
+    mov rcx, hWnd                        ; Window handle
+    call UpdateWindow                    ; Force paint message immediately
+
+    ; -------------------------
+    ; Set up game timer (~60 FPS)
+    ; -------------------------
+    mov rcx, hWnd                        ; Window handle
+    mov rdx, TIMER_ID                    ; Arbitrary identifier for the timer
+    mov r8, 16                           ; 16 ms = ~60 frames per second
+    mov r9, 0                            ; NULL = WM_TIMER message (no callback)
+    call SetTimer                        ; Start the recurring timer
+
+    ; -------------------------
+    ; Initialize game state and background music
+    ; -------------------------
+    call ResetGameState                  ; Set up or reset the game logic variables
+    call StartBackgroundMusic            ; Begin background music playback
+
+message_loop:
+    ; -------------------------
+    ; Main message loop - waits for Windows messages (input, paint, etc.)
+    ; -------------------------
+    lea rcx, msg_hwnd                    ; Pointer to MSG struct
+    mov rdx, 0                           ; Get messages from any window
+    mov r8, 0                            ; No filter (minimum message)
+    mov r9, 0                            ; No filter (maximum message)
+    call GetMessageW                     ; Waits for a message (blocking)
+    cmp rax, 0                           ; Returns 0 on WM_QUIT
+    je exit_program                      ; Exit loop on quit message
+
+    lea rcx, msg_hwnd                    ; Translate virtual-key messages
+    call TranslateMessage                ; Converts key messages to character messages
+    lea rcx, msg_hwnd                    ; Dispatch message to window procedure
+    call DispatchMessageW                ; Sends to WndProc
+    jmp message_loop                     ; Repeat loop
+
+exit_program:
+    ; -------------------------
+    ; Cleanup resources and exit program
+    ; -------------------------
+    lea rcx, ArcadeFont                  ; Pointer to font name string
+    call RemoveFontResourceA             ; Unload custom font
+
+    mov rcx, hBlackBrush                 ; Handle to black brush
+    call DeleteObject                    ; Free GDI resource
+
+    mov rcx, hWhiteBrush                 ; Handle to white brush
+    call DeleteObject                    ; Free GDI resource
+
+    mov rcx, hFont                       ; Handle to font object
+    call DeleteObject                    ; Delete font to avoid leaks
+
+    mov rcx, 0                           ; Exit code = 0 (success)
+    call ExitProcess                     ; Exit the application
+main ENDP
+
+; =============================================================================
+;                              WINDOW PROCEDURE
+; =============================================================================
+; -----------------------------
+; Window Procedure Entry Point
+; -----------------------------
+WindowProc PROC
+    push rbp                        ; Save base pointer
+    mov rbp, rsp                    ; Set new base pointer
+    sub rsp, 40h                    ; Allocate 64 bytes on the stack
+
+; -----------------------------
+; Message Handling Dispatcher
+; -----------------------------
+    cmp rdx, 15                     ; Compare message ID with WM_PAINT (15)
+    je handle_paint                 ; If equal, jump to handle_paint
+
+    cmp rdx, 2                      ; Compare message ID with WM_DESTROY (2)
+    je handle_destroy               ; If equal, jump to handle_destroy
+
+    cmp rdx, 275                    ; Compare message ID with WM_TIMER (275)
+    je handle_timer                 ; If equal, jump to handle_timer
+
+    cmp rdx, 256                    ; Compare message ID with WM_KEYDOWN (256)
+    je handle_keydown               ; If equal, jump to handle_keydown
+
+    call DefWindowProcW             ; Call default window procedure
+    jmp proc_exit                   ; Jump to procedure exit
+
+; -----------------------------
+; Handle WM_PAINT
+; -----------------------------
+handle_paint:
+    call PaintGame                  ; Call PaintGame procedure
+    xor rax, rax                    ; Set return value to 0
+    jmp proc_exit                   ; Jump to procedure exit
+
+; -----------------------------
+; Handle WM_DESTROY
+; -----------------------------
+handle_destroy:
+    mov rcx, TIMER_ID               ; Load TIMER_ID into rcx
+    call KillTimer                  ; Call KillTimer to stop the timer
+
+    mov rcx, 0                      ; Load 0 into rcx
+    call PostQuitMessage            ; Post quit message to end the application
+
+    xor rax, rax                    ; Set return value to 0
+    jmp proc_exit                   ; Jump to procedure exit
+
+; -----------------------------
+; Handle WM_TIMER
+; -----------------------------
+handle_timer:
+    cmp rdx, WIN_TIMER_ID           ; Compare timer ID with WIN_TIMER_ID
+    je handle_win_timer             ; If equal, jump to handle_win_timer
+
+    cmp gameState, GAME_STATE_PLAYING ; Check if game is in playing state
+    jne skip_update                 ; If not, skip update
+
+    call UpdateGame                 ; Call UpdateGame procedure
+
+skip_update:
+    mov rcx, hWnd                   ; Load window handle into rcx
+    mov rdx, 0                      ; Set rdx to 0
+    mov r8, 1                       ; Set r8 to 1 (TRUE)
+    call InvalidateRect             ; Invalidate the window rectangle
+
+    xor rax, rax                    ; Set return value to 0
+    jmp proc_exit                   ; Jump to procedure exit
+
+; -----------------------------
+; Handle WIN_TIMER_ID
+; -----------------------------
+handle_win_timer:
+    mov rcx, hWnd                   ; Load window handle into rcx
+    mov rdx, WIN_TIMER_ID           ; Load WIN_TIMER_ID into rdx
+    call KillTimer                  ; Kill the win timer
+
+    call ResetScores                ; Reset the game scores
+    mov gameState, GAME_STATE_HOME  ; Set game state to home
+    call StartBackgroundMusic       ; Start background music
+
+    mov rcx, hWnd                   ; Load window handle into rcx
+    mov rdx, 0                      ; Set rdx to 0
+    mov r8, 1                       ; Set r8 to 1 (TRUE)
+    call InvalidateRect             ; Invalidate the window rectangle
+
+    xor rax, rax                    ; Set return value to 0
+    jmp proc_exit                   ; Jump to procedure exit
+
+; -----------------------------
+; Handle WM_KEYDOWN
+; -----------------------------
+handle_keydown:
+    cmp r8, 32                      ; Check if spacebar (ASCII 32) is pressed
+    jne proc_default                ; If not, jump to default procedure
+
+    cmp gameState, GAME_STATE_HOME  ; Check if game is in home state
+    je start_game                   ; If yes, start the game
+
+    cmp gameState, GAME_STATE_WIN   ; Check if game is in win state
+    je return_to_home_manual        ; If yes, return to home manually
+
+    jmp proc_default                ; Jump to default procedure
+
+; -----------------------------
+; Start New Game from Home
+; -----------------------------
+start_game:
+    call StopBackgroundMusic        ; Stop background music
+    mov gameState, GAME_STATE_PLAYING ; Set game state to playing
+    call ResetGameState             ; Reset game state
+
+    mov rcx, hWnd                   ; Load window handle into rcx
+    mov rdx, 0                      ; Set rdx to 0
+    mov r8, 1                       ; Set r8 to 1 (TRUE)
+    call InvalidateRect             ; Invalidate the window rectangle
+
+    xor rax, rax                    ; Set return value to 0
+    jmp proc_exit                   ; Jump to procedure exit
+
+; -----------------------------
+; Return to Home After Win
+; -----------------------------
+return_to_home_manual:
+    call ResetScores                ; Reset the game scores
+    mov gameState, GAME_STATE_HOME  ; Set game state to home
+    call StartBackgroundMusic       ; Start background music
+
+    mov rcx, hWnd                   ; Load window handle into rcx
+    mov rdx, 0                      ; Set rdx to 0
+    mov r8, 1                       ; Set r8 to 1 (TRUE)
+    call InvalidateRect             ; Invalidate the window rectangle
+
+    xor rax, rax                    ; Set return value to 0
+    jmp proc_exit                   ; Jump to procedure exit
+
+; -----------------------------
+; Default Message Handler
+; -----------------------------
+proc_default:
+    call DefWindowProcW             ; Call default window procedure
+    jmp proc_exit                   ; Jump to procedure exit
+
+; -----------------------------
+; Procedure Exit
+; -----------------------------
+proc_exit:
+    add rsp, 40h                    ; Deallocate 64 bytes from the stack
+    pop rbp                         ; Restore base pointer
+    ret                             ; Return from procedure
+WindowProc ENDP
+
+; =============================================================================
+;                               GAME PROCEDURES
+; =============================================================================
+
+; -----------------------------
+; Reset Game State
+; -----------------------------
+ResetGameState PROC
+    push rbp                                  ; Save base pointer
+    mov rbp, rsp                              ; Set up new base pointer
+
+    mov ballX, WINDOW_WIDTH / 2               ; Center ball horizontally
+    mov ballY, WINDOW_HEIGHT / 2              ; Center ball vertically
+    mov ballVelX, BALL_SPEED                  ; Set horizontal speed of ball
+    mov ballVelY, BALL_SPEED                  ; Set vertical speed of ball
+
+    mov paddle1Y, (WINDOW_HEIGHT - PADDLE_HEIGHT) / 2 ; Center paddle 1 vertically
+    mov paddle2Y, (WINDOW_HEIGHT - PADDLE_HEIGHT) / 2 ; Center paddle 2 vertically
+
+    call ResetScores                          ; Reset player scores to 0
+
+    pop rbp                                   ; Restore previous base pointer
+    ret                                       ; Return from procedure
+ResetGameState ENDP
+
+; -----------------------------
+; Reset Player Scores
+; -----------------------------
+ResetScores PROC
+    push rbp                                  ; Save base pointer
+    mov rbp, rsp                              ; Set up new base pointer
+
+    mov score1, 0                             ; Set player 1 score to 0
+    mov score2, 0                             ; Set player 2 score to 0
+
+    pop rbp                                   ; Restore previous base pointer
+    ret                                       ; Return from procedure
+ResetScores ENDP
+
+; -----------------------------
+; Update Game State
+; -----------------------------
+UpdateGame PROC
+    push rbp                                  ; Save base pointer
+    mov rbp, rsp                              ; Set up new base pointer
+    sub rsp, 40h                              ; Allocate stack space for local use
+
+; -----------------------------
+; Player 1 Move Up (W key = 87)
+; -----------------------------
+    mov rcx, 87                               ; RCX = code for W
+    call GetAsyncKeyState                     ; Get state of W key
+    test ax, 8000h                            ; Check if high-order bit is set (key pressed)
+    jz check_s                                ; Jump if not pressed
+
+    mov rax, paddle1Y                         ; Load paddle 1 Y position
+    sub rax, PADDLE_SPEED                     ; Move up by paddle speed
+    cmp rax, 0                                ; Check if it goes off screen
+    jl check_s                                ; If less than 0, skip update
+    mov paddle1Y, rax                         ; Update paddle 1 Y position
+
+; -----------------------------
+; Player 1 Move Down (S key = 83)
+; -----------------------------
+check_s:
+    mov rcx, 83                               ; RCX = code for S
+    call GetAsyncKeyState                     ; Get state of 'S' key
+    test ax, 8000h                            ; Check if key is pressed
+    jz check_up                               ; Jump if not pressed
+
+    mov rax, paddle1Y                         ; Load paddle 1 Y position
+    add rax, PADDLE_SPEED                     ; Move down
+    mov rbx, WINDOW_HEIGHT - PADDLE_HEIGHT    ; Calculate lower screen boundary
+    cmp rax, rbx                              ; Compare new position with boundary
+    jg check_up                               ; If out of bounds, skip update
+    mov paddle1Y, rax                         ; Update paddle 1 Y position
+
+; -----------------------------
+; Player 2 Move Up (Up Arrow = 38)
+; -----------------------------
+check_up:
+    mov rcx, 38                               ; RCX = code for up arrow
+    call GetAsyncKeyState                     ; Get key state
+    test ax, 8000h                            ; Check if pressed
+    jz check_down                             ; Jump if not pressed
+
+    mov rax, paddle2Y                         ; Load paddle 2 Y position
+    sub rax, PADDLE_SPEED                     ; Move up
+    cmp rax, 0                                ; Check screen boundary
+    jl check_down                             ; If above screen, skip update
+    mov paddle2Y, rax                         ; Update paddle 2 Y position
+
+; -----------------------------
+; Player 2 Move Down (Down Arrow = 40)
+; -----------------------------
+check_down:
+    mov rcx, 40                               ; RCX = code for down arrow
+    call GetAsyncKeyState                     ; Get key state
+    test ax, 8000h                            ; Check if pressed
+    jz update_ball                            ; Jump if not pressed
+
+    mov rax, paddle2Y                         ; Load paddle 2 Y position
+    add rax, PADDLE_SPEED                     ; Move down
+    mov rbx, WINDOW_HEIGHT - PADDLE_HEIGHT    ; Bottom boundary
+    cmp rax, rbx                              ; Compare
+    jg update_ball                            ; Skip if out of bounds
+    mov paddle2Y, rax                         ; Update paddle 2 Y position
+
+; -----------------------------
+; Update Ball Position
+; -----------------------------
+update_ball:
+    mov rax, ballX                            ; Load ball X position
+    add rax, ballVelX                         ; Add horizontal velocity
+    mov ballX, rax                            ; Store updated X
+
+    mov rax, ballY                            ; Load ball Y position
+    add rax, ballVelY                         ; Add vertical velocity
+    mov ballY, rax                            ; Store updated Y
+
+    cmp ballY, 0                              ; Check top boundary
+    jle bounce_y                              ; Bounce if <= 0
+
+    mov rax, WINDOW_HEIGHT - BALL_SIZE        ; Bottom boundary
+    cmp ballY, rax                            ; Check if out of bounds
+    jge bounce_y                              ; Bounce if >= screen bottom
+
+    jmp check_paddles                         ; Continue to paddle checks
+
+; -----------------------------
+; Bounce Ball on Top/Bottom
+; -----------------------------
+bounce_y:
+    lea rcx, WallCollisionSound               ; RCX = sound name
+    call play_sound                           ; Play wall bounce sound
+    neg ballVelY                              ; Reverse Y direction
+
+    cmp ballY, 0                              ; If hit top
+    jg check_bottom                           ; If not, check bottom
+    mov ballY, 0                              ; Clamp to top
+    jmp check_paddles                         ; Continue
+
+check_bottom:
+    mov rax, WINDOW_HEIGHT - BALL_SIZE        ; Bottom limit
+    cmp ballY, rax                            ; Compare ball position
+    jl check_paddles                          ; Skip if inside
+    mov ballY, rax                            ; Clamp to bottom
+
+; -----------------------------
+; Paddle 1 Collision
+; -----------------------------
+check_paddles:
+    mov rax, ballX                            ; Load ball X
+    cmp rax, PADDLE_WIDTH + 10                ; Check if within left paddle
+    jg check_right_paddle                     ; Skip if not
+
+    mov rbx, ballY
+    add rbx, BALL_SIZE/2                      ; Center of ball Y
+    mov rcx, paddle1Y
+    cmp rbx, rcx                              ; Check top of paddle
+    jl check_right_paddle                     ; Missed
+
+    add rcx, PADDLE_HEIGHT
+    cmp rbx, rcx                              ; Check bottom of paddle
+    jg check_right_paddle                     ; Missed
+
+    neg ballVelX                              ; Reverse X direction
+    mov ballX, PADDLE_WIDTH + 10              ; Adjust position
+    lea rcx, PaddleCollisionSound             ; Play sound
+    call play_sound
+
+; -----------------------------
+; Paddle 2 Collision
+; -----------------------------
+check_right_paddle:
+    mov rax, ballX
+    mov rbx, WINDOW_WIDTH - PADDLE_WIDTH - 10 - BALL_SIZE
+    cmp rax, rbx                              ; Check if within paddle 2 zone
+    jl check_reset                            ; Skip if not
+
+    mov rbx, ballY
+    add rbx, BALL_SIZE/2                      ; Ball center Y
+    mov rcx, paddle2Y
+    cmp rbx, rcx                              ; Check top of paddle
+    jl check_reset
+    add rcx, PADDLE_HEIGHT
+    cmp rbx, rcx                              ; Check bottom of paddle
+    jg check_reset
+
+    neg ballVelX                              ; Reverse direction
+    mov rax, WINDOW_WIDTH - PADDLE_WIDTH - 10 - BALL_SIZE
+    mov ballX, rax                            ; Adjust position
+    lea rcx, PaddleCollisionSound
+    call play_sound
+    jmp update_done                           ; End update
+
+; -----------------------------
+; Score Check
+; -----------------------------
+check_reset:
+    cmp ballX, -BALL_SIZE                     ; Check if ball is past the left edge
+    jl left_score                             ; If so, player 2 scores
+    mov rax, WINDOW_WIDTH                     ; Load right edge of the screen
+    cmp ballX, rax                            ; Check if ball is past the right edge
+    jg right_score                            ; If so, player 1 scores
+    jmp update_done                           ; Otherwise, no score – continue game
+
+; -----------------------------
+; Player 2 Scores
+; -----------------------------
+left_score:
+    mov rax, score2                           ; Load player 2's score
+    add rax, 1                                ; Increment score
+    mov score2, rax                           ; Store updated score
+    cmp rax, 5                                ; Check if player 2 reached winning score
+    je player2_wins                           ; If so, jump to win sequence
+    jmp reset_ball                            ; Otherwise, reset ball and continue
+
+; -----------------------------
+; Player 1 Scores
+; -----------------------------
+right_score:
+    mov rax, score1                           ; Load player 1's score
+    add rax, 1                                ; Increment score
+    mov score1, rax                           ; Store updated score
+    cmp rax, 5                                ; Check if player 1 reached winning score
+    je player1_wins                           ; If so, jump to win sequence
+    jmp reset_ball                            ; Otherwise, reset ball and continue
+
+; -----------------------------
+; Player 1 Wins
+; -----------------------------
+player1_wins:
+    lea rcx, WinSound                         ; Load address of win sound
+    call play_sound                           ; Play victory sound
+    mov winnerPlayer, 1                       ; Set winner to player 1
+    mov gameState, GAME_STATE_WIN             ; Set game state to "win screen"
+    mov rcx, hWnd                             ; Handle to window
+    mov rdx, WIN_TIMER_ID                     ; Timer ID
+    mov r8, WIN_DISPLAY_DURATION              ; Duration to show win screen
+    mov r9, 0                                 ; No callback function
+    call SetTimer                             ; Start timer for win screen
+    mov rcx, hWnd                             ; Handle to window
+    mov rdx, 0                                ; Null RECT (entire window)
+    mov r8, 1                                 ; Erase background = TRUE
+    call InvalidateRect                       ; Redraw window to show win message
+    jmp update_done                           ; End update
+
+; -----------------------------
+; Player 2 Wins
+; -----------------------------
+player2_wins:
+    lea rcx, WinSound                         ; Load address of win sound
+    call play_sound                           ; Play victory sound
+    mov winnerPlayer, 2                       ; Set winner to player 2
+    mov gameState, GAME_STATE_WIN             ; Set game state to "win screen"
+    mov rcx, hWnd                             ; Handle to window
+    mov rdx, WIN_TIMER_ID                     ; Timer ID
+    mov r8, WIN_DISPLAY_DURATION              ; Duration to show win screen
+    mov r9, 0                                 ; No callback function
+    call SetTimer                             ; Start timer for win screen
+    mov rcx, hWnd                             ; Handle to window
+    mov rdx, 0                                ; Null RECT (entire window)
+    mov r8, 1                                 ; Erase background = TRUE
+    call InvalidateRect                       ; Redraw window to show win message
+    jmp update_done                           ; End update
+
+; -----------------------------
+; Return to Home Screen
+; -----------------------------
+return_to_home:
+    call ResetScores                          ; Reset both player scores
+    mov gameState, GAME_STATE_HOME            ; Set game state to "home screen"
+    call StartBackgroundMusic                 ; Start home screen background music
+    mov rcx, hWnd                             ; Handle to window
+    mov rdx, 0                                ; Null RECT (entire window)
+    mov r8, 1                                 ; Erase background = TRUE
+    call InvalidateRect                       ; Redraw window to update screen
+    jmp update_done                           ; End update
+
+; -----------------------------
+; Reset Ball After Score
+; -----------------------------
+reset_ball:
+    lea rcx, ResetBallSound                   ; Load address of reset ball sound
+    call play_sound                           ; Play sound to indicate reset
+    mov ballX, WINDOW_WIDTH / 2               ; Reset ball to center horizontally
+    mov ballY, WINDOW_HEIGHT / 2              ; Reset ball to center vertically
+    neg ballVelX                              ; Reverse horizontal direction for next serve
+
+
+; -----------------------------
+; Finish Update
+; -----------------------------
+update_done:
+    add rsp, 40h                              ; Deallocate stack space
+    pop rbp                                   ; Restore base pointer
+    ret                                       ; Return from procedure
+UpdateGame ENDP
+
+
+; =============================================================================
+;                              GAME STATE PROCEDURE
+; =============================================================================
+
+; -----------------------------
+; Paint Game Screen
+; -----------------------------
+PaintGame PROC
+    push rbp                                  ; Save base pointer
+    mov rbp, rsp                              ; Set base pointer for local stack frame
+    sub rsp, 80h                              ; Allocate 128 bytes on stack for locals and API structures
+
+    ; -----------------------------
+    ; Begin Paint
+    ; -----------------------------
+    mov rcx, hWnd                             ; HWND passed to BeginPaint
+    lea rdx, ps_hdc                           ; Pointer to PAINTSTRUCT
+    call BeginPaint                           ; Begin painting
+    mov [rbp-8], rax                          ; Save HDC (device context) to local variable
+
+    ; -----------------------------
+    ; Clear Background
+    ; -----------------------------
+    mov rcx, rax                              ; rcx = HDC
+    mov qword ptr [rsp+20h], 0                ; RECT.left = 0
+    mov qword ptr [rsp+28h], 0                ; RECT.top = 0
+    mov qword ptr [rsp+30h], WINDOW_WIDTH     ; RECT.right = window width
+    mov qword ptr [rsp+38h], WINDOW_HEIGHT    ; RECT.bottom = window height
+    lea rdx, qword ptr [rsp+20h]              ; rdx = &RECT
+    mov r8, hBlackBrush                       ; r8 = black background brush
+    call FillRect                             ; Fill the screen background
+
+    ; -----------------------------
+    ; Determine Game State to Paint
+    ; -----------------------------
+    cmp gameState, GAME_STATE_HOME            ; If game state is home screen...
+    je paint_home_screen                      ; Jump to home screen rendering
+    jmp paint_game_screen                     ; Otherwise draw game screen
+
+; -----------------------------
+; Paint Home Screen
+; -----------------------------
+paint_home_screen:
+    mov rcx, [rbp-8]                          ; rcx = HDC (handle to device context, saved earlier in [rbp-8])
+    mov rdx, WHITE_COLOR                      ; rdx = text color (white)
+    call SetTextColor                         ; Set the text color for the device context
+
+    mov rcx, [rbp-8]                          ; rcx = HDC
+    mov rdx, 1                                ; rdx = 1 (TRANSPARENT mode)
+    call SetBkMode                            ; Set background mode for text to transparent
+
+    mov rcx, [rbp-8]                          ; rcx = HDC
+    mov rdx, hFont                            ; rdx = handle to the game font
+    call SelectObject                         ; Select the font into the device context
+
+    ; Draw "PONG" Title
+    mov rcx, [rbp-8]                          ; rcx = HDC
+    mov rdx, WINDOW_WIDTH/2 - 55              ; rdx = x-coordinate to center "PONG" horizontally
+    mov r8, WINDOW_HEIGHT/2 - 100             ; r8 = y-coordinate to place "PONG" near top center
+    lea r9, PongText                          ; r9 = pointer to the "PONG" string
+    mov qword ptr [rsp+20h], 4                ; stack param: length of the string ("PONG" is 4 characters)
+    call TextOutA                             ; Draw "PONG" at specified coordinates
+
+    ; Draw "Press SPACE to play"
+    mov rcx, [rbp-8]                          ; rcx = HDC
+    mov rdx, WINDOW_WIDTH/2 - 215             ; rdx = x-coordinate to center the message
+    mov r8, WINDOW_HEIGHT/2 + 100             ; r8 = y-coordinate below the title
+    lea r9, playText                          ; r9 = pointer to the "Press SPACE to play" string
+    mov qword ptr [rsp+20h], 22               ; stack param: length of the string (22 characters)
+    call TextOutA                             ; Draw the prompt at specified coordinates
+
+    jmp paint_done                            ; Jump to paint_done to finish painting
+
+
+; -----------------------------
+; Paint Game Screen
+; -----------------------------
+paint_game_screen:
+    cmp gameState, GAME_STATE_WIN             ; Check if win screen should be shown
+    je paint_win_screen                       ; If so, jump to win screen
+    
+    ; Setup Font and Text Properties
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, hFont                            ; Load font handle into rdx
+    call SelectObject                         ; Select the font into the device context
+    
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, 00FFFFFFh                        ; White text color (RGB: FF FF FF)
+    call SetTextColor                         ; Set text color to white
+    
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, 1                                ; Transparent background mode for text
+    call SetBkMode                            ; Set background mode to transparent
+    
+    ; Draw Player 1 Score
+    mov rax, score1                           ; Load player 1 score value into rax
+    imul rax, 2                               ; Multiply by 2 (each character is 2 bytes wide)
+    lea r9, score_strings                     ; Load effective address of score strings array
+    add r9, rax                               ; Add offset to select correct score string
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, WINDOW_WIDTH/2 - 350             ; Set x-position (left side of screen)
+    mov r8, WINDOW_HEIGHT/2 - 250             ; Set y-position (near top of screen)
+    mov qword ptr [rsp+20h], 1                ; Set string length to 1 character
+    call TextOutA                             ; Draw the score text to screen
+    
+    ; Draw Player 2 Score
+    mov rax, score2                           ; Load player 2 score value into rax
+    imul rax, 2                               ; Multiply by 2 (each character is 2 bytes wide)
+    lea r9, score_strings                     ; Load effective address of score strings array
+    add r9, rax                               ; Add offset to select correct score string
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, WINDOW_WIDTH/2 + 350             ; Set x-position (right side of screen)
+    mov r8, WINDOW_HEIGHT/2 - 250             ; Set y-position (near top of screen)
+    mov qword ptr [rsp+20h], 1                ; Set string length to 1 character
+    call TextOutA                             ; Draw the score text to screen
+    
+    ; Draw Player 1 Paddle
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, 10                               ; Set left edge of paddle (10 pixels from left)
+    mov r8, paddle1Y                          ; Set top edge using paddle1Y position
+    mov r9, 10 + PADDLE_WIDTH                 ; Set right edge (left + paddle width)
+    mov rax, paddle1Y                         ; Load paddle1Y position into rax
+    add rax, PADDLE_HEIGHT                    ; Calculate bottom edge (top + paddle height)
+    mov qword ptr [rsp+20h], rax              ; Store bottom coordinate on stack
+    call Rectangle                            ; Draw the paddle rectangle
+    
+    ; Draw Player 2 Paddle
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, WINDOW_WIDTH - PADDLE_WIDTH - 10 ; Set left edge (right side minus paddle width minus margin)
+    mov r8, paddle2Y                          ; Set top edge using paddle2Y position
+    mov r9, WINDOW_WIDTH - 10                 ; Set right edge (10 pixels from right side)
+    mov rax, paddle2Y                         ; Load paddle2Y position into rax
+    add rax, PADDLE_HEIGHT                    ; Calculate bottom edge (top + paddle height)
+    mov qword ptr [rsp+20h], rax              ; Store bottom coordinate on stack
+    call Rectangle                            ; Draw the paddle rectangle
+    
+    ; Draw Ball
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, ballX                            ; Set left edge using ballX position
+    mov r8, ballY                             ; Set top edge using ballY position
+    mov rax, ballX                            ; Load ballX position into rax
+    add rax, BALL_SIZE                        ; Calculate right edge (left + ball size)
+    mov r9, rax                               ; Store right coordinate in r9
+    mov rax, ballY                            ; Load ballY position into rax
+    add rax, BALL_SIZE                        ; Calculate bottom edge (top + ball size)
+    mov qword ptr [rsp+20h], rax              ; Store bottom coordinate on stack
+    call Rectangle                            ; Draw the ball rectangle
+    
+    ; Draw Center Divider Line
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, WINDOW_WIDTH/2 - 2               ; Set left edge (center minus 2 pixels for 4-pixel wide line)
+    mov r8, 0                                 ; Set top edge (start at top of window)
+    mov r9, WINDOW_WIDTH/2 + 2                ; Set right edge (center plus 2 pixels for 4-pixel wide line)
+    mov qword ptr [rsp+20h], WINDOW_HEIGHT    ; Set bottom edge (full height of window)
+    call Rectangle                            ; Draw the center divider line rectangle
+    
+    jmp paint_done                            ; Jump to painting completion routine
+
+; -----------------------------
+; Paint Win Screen
+; -----------------------------
+paint_win_screen:
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, WHITE_COLOR                      ; Load white color constant into rdx
+    call SetTextColor                         ; Set text color to white
+    
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, 1                                ; Set transparent background mode (1 = TRANSPARENT)
+    call SetBkMode                            ; Set background mode to transparent
+    
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, hFont                            ; Load font handle into rdx  
+    call SelectObject                         ; Select the font into the device context
+    
+    ; Decide which player won
+    cmp winnerPlayer, 1                       ; Compare winnerPlayer variable with 1
+    je display_player1_win                    ; Jump to player 1 win display if equal
+    
+    ; Player 2 wins
+    lea r9, player2WinText                    ; Load effective address of player 2 win text string
+    mov qword ptr [rsp+20h], 16               ; Set string length to 16 characters on stack
+    jmp display_win_text                      ; Jump to common text display routine
+    
+display_player1_win:
+    lea r9, player1WinText                    ; Load effective address of player 1 win text string
+    mov qword ptr [rsp+20h], 16               ; Set string length to 16 characters on stack
+    
+display_win_text:
+    ; Display Win Message
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, WINDOW_WIDTH/2 - 150             ; Set x-position (centered horizontally minus 150 pixels)
+    mov r8, WINDOW_HEIGHT/2 - 100             ; Set y-position (centered vertically minus 100 pixels)
+    call TextOutA                             ; Draw the win message text to screen
+    
+    ; Display Prompt to Return
+    mov rcx, [rbp-8]                          ; Load device context handle into rcx
+    mov rdx, WINDOW_WIDTH/2 - 275             ; Set x-position (centered horizontally minus 275 pixels)
+    mov r8, WINDOW_HEIGHT/2 + 50              ; Set y-position (centered vertically plus 50 pixels)
+    lea r9, pressSpaceText                    ; Load effective address of "press space" prompt text
+    mov qword ptr [rsp+20h], 26               ; Set string length to 26 characters on stack
+    call TextOutA                             ; Draw the prompt text to screen
+    
+    jmp paint_done                            ; Jump to painting completion routine
+
+; -----------------------------
+; Finalize Paint
+; -----------------------------
+paint_done:
+    mov rcx, hWnd                             ; Load window handle into rcx
+    lea rdx, ps_hdc                           ; Load effective address of PAINTSTRUCT into rdx
+    call EndPaint                             ; End the painting operation and release device context
+    
+    add rsp, 80h                              ; Restore stack space (deallocate 128 bytes of local variables)
+    pop rbp                                   ; Restore base pointer from stack
+    ret                                       ; Return from function to caller
+
+PaintGame ENDP                               ; End of PaintGame procedure definition
+
+; =============================================================================
+;                              GAME STATE PROCEDURE
+; =============================================================================
+
+; -----------------------------
+; Play Sound Effect
+; -----------------------------
+play_sound:
+    push rbp                                  ; Save base pointer on stack
+    mov rbp, rsp                              ; Set up new stack frame
+    and rsp, -16                              ; Align stack to 16-byte boundary
+    sub rsp, 32                               ; Allocate 32 bytes of stack space for local variables
+    
+    mov rdx, 0                                ; Set hmod parameter to NULL (no module handle)
+    mov r8, 00020001h                         ; Set fdwSound flags (SND_FILENAME | SND_ASYNC)
+    call PlaySoundA                           ; Call Windows API to play sound file
+    
+    mov rsp, rbp                              ; Restore stack pointer
+    pop rbp                                   ; Restore base pointer from stack
+    ret                                       ; Return from function
+
+; -----------------------------
+; Start Background Music
+; -----------------------------
+StartBackgroundMusic PROC
+    push rbp                                  ; Save base pointer on stack
+    mov rbp, rsp                              ; Set up new stack frame
+    and rsp, -16                              ; Align stack to 16-byte boundary
+    sub rsp, 32                               ; Allocate 32 bytes of stack space for local variables
+    
+    cmp musicPlaying, 1                       ; Check if music is already playing
+    je music_already_playing                  ; If yes, skip starting music
+    
+    lea rcx, BackgroundMusic                  ; Load effective address of background music filename
+    mov rdx, 0                                ; Set hmod parameter to NULL (no module handle)
+    mov r8, 00020009h                         ; Set fdwSound flags (SND_FILENAME | SND_ASYNC | SND_LOOP)
+    call PlaySoundA                           ; Call Windows API to play background music
+    
+    mov musicPlaying, 1                       ; Set musicPlaying flag to 1 (true)
+    
+music_already_playing:
+    mov rsp, rbp                              ; Restore stack pointer
+    pop rbp                                   ; Restore base pointer from stack
+    ret                                       ; Return from function
+StartBackgroundMusic ENDP                    ; End of StartBackgroundMusic procedure
+
+; -----------------------------
+; Stop Background Music
+; -----------------------------
+StopBackgroundMusic PROC
+    push rbp                                  ; Save base pointer on stack
+    mov rbp, rsp                              ; Set up new stack frame
+    and rsp, -16                              ; Align stack to 16-byte boundary
+    sub rsp, 32                               ; Allocate 32 bytes of stack space for local variables
+    
+    mov rcx, 0                                ; Set pszSound parameter to NULL (stop all sounds)
+    mov rdx, 0                                ; Set hmod parameter to NULL (no module handle)
+    mov r8, 0                                 ; Set fdwSound flags to 0 (stop playing)
+    call PlaySoundA                           ; Call Windows API to stop all sounds
+    
+    mov musicPlaying, 0                       ; Set musicPlaying flag to 0 (false)
+    
+    mov rsp, rbp                              ; Restore stack pointer
+    pop rbp                                   ; Restore base pointer from stack
+    ret                                       ; Return from function
+StopBackgroundMusic ENDP                     ; End of StopBackgroundMusic procedure
+
+END                                           ; End of assembly program

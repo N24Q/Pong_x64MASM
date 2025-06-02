@@ -1,0 +1,330 @@
+; ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////   
+;  __  __           _____ __  __            __ _  _       _____        __      
+; |  \/  |   /\    / ____|  \/  |          / /| || |     |_   _|      / _|     
+; | \  / |  /  \  | (___ | \  / |   __  __/ /_| || |_      | |  _ __ | |_ ___  
+; | |\/| | / /\ \  \___ \| |\/| |   \ \/ / '_ \__   _|     | | | '_ \|  _/ _ \ 
+; | |  | |/ ____ \ ____) | |  | |    >  <| (_) | | |      _| |_| | | | || (_) |
+; |_|  |_/_/    \_\_____/|_|  |_|   /_/\_\\___/  |_|     |_____|_| |_|_| \___/ 
+;                                                                                                                 
+; ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+;----- INDEX ------
+Registers - Line 30-75
+Syntaxes - Line 79-223
+Stack/Pointers/Data - Line 226-342
+;-------------------
+=============================================================================================
+============================================
+MASM x64 Registers used in this program
+============================================
+
+General-Purpose Registers
+-------------------------
+
+RAX - 
+- Receives return values from API calls (e.g., GetModuleHandleW, CreateWindowExW)
+- Used for temporary computations (e.g., ball/paddle positions, collision logic)
+
+RBX - 
+- Used for intermediate calculations in game logic
+- Temporary storage for comparisons or bounds (e.g., paddle limits, screen size)
+
+RCX - 
+- First argument in Windows x64 calling convention
+- Commonly used for: window handle (hWnd), color values, sound paths, brush handles
+
+RDX - 
+- Second argument in calling convention
+- Used for message IDs (in WindowProc), paint structures, or dimensions
+
+R8 - 
+- Third argument
+- Frequently holds coordinates (Y position), sizes, flags (e.g., InvalidateRect’s erase flag)
+
+R9 - 
+- Fourth argument
+- Used for strings, coordinates (X or bottom-right), or additional flags
+
+RBP - 
+- Frame/base pointer
+- Used to manage local variables and stack frames in all procedures
+
+RSP - 
+- Stack pointer
+- Managed to allocate shadow space, align stack for calls
+- Accessed indirectly (e.g., [rsp+20h], [rsp+28h]) to pass additional arguments
+
+Special Notes
+-------------
+- No SIMD (XMM/YMM/ZMM) or segment (CS, DS, etc.) registers are used.
+- Registers are saved/restored via `push rbp` and `pop rbp` where needed.
+- The shadow space (32 bytes) is used in most function calls via `[rsp+...]`.
+
+=============================================================================================
+
+=============================================================================================
+===================================================
+MASM x64 Syntax references used in this program
+===================================================
+
+1. Directives and Declarations
+------------------------------
+extrn <symbol>: proc
+- Declares external procedures (functions from Windows API or other object files).
+
+.data
+- Starts the data segment where initialized variables and constants are defined.
+
+.code
+- Starts the code segment (where procedures and logic reside).
+
+PROC / ENDP
+- Defines a procedure (function).
+  Example: main PROC ... main ENDP
+
+END
+- Marks the end of the source file for the assembler.
+
+equ
+- Defines a constant value.
+  Example: WINDOW_WIDTH equ 800
+
+dq / dd / db
+- Data declarations:
+  - dq: Define Quadword (8 bytes)
+  - dd: Define Doubleword (4 bytes)
+  - db: Define Byte (1 byte)
+
+dup
+- Used to repeat a value multiple times.
+  Example: ps_rgbReserved db 32 dup(0)
+
+offset
+- Gets the memory address of a variable or label.
+  Example: wc_lpszClassName dq offset className
+
+----------------------------------------------
+2. Instructions
+----------------
+mov <dest>, <src>
+- Move data from source to destination.
+
+lea <reg>, <mem>
+- Load the effective address of memory into a register.
+
+push <reg> / pop <reg>
+- Push or pop values to/from the stack.
+
+call <function>
+- Call a procedure.
+
+ret
+- Return from a procedure.
+
+jmp <label>
+- Unconditional jump to a label.
+
+je / jne / jz / jg / jl / jge / jle
+- Conditional jumps:
+  - je / jz: Jump if equal / zero
+  - jne: Jump if not equal
+  - jg: Jump if greater
+  - jl: Jump if less
+  - jge: Jump if greater or equal
+  - jle: Jump if less or equal
+
+cmp <a>, <b>
+- Compare two operands (sets flags for conditional jumps).
+
+test <a>, <b>
+- Bitwise AND between operands; used to set condition flags.
+
+add / sub / imul
+- Arithmetic operations:
+  - add: Add
+  - sub: Subtract
+  - imul: Integer multiply
+
+xor <reg>, <reg>
+- Bitwise exclusive OR, often used to set a register to zero.
+
+neg <reg>
+- Negates the value (two's complement).
+
+and <reg>, <value>
+- Bitwise AND (e.g., for stack alignment).
+
+----------------------------------------------
+3. Memory Addressing and Stack Usage
+------------------------------------
+[rsp+<offset>]
+- Access memory on the stack (used to pass additional arguments beyond 4).
+
+[rbp-<offset>]
+- Access local variables or temporary storage using base pointer.
+
+----------------------------------------------
+4. Labels
+---------
+<label>:
+- Declares a code label for jumping.
+  Example: message_loop:
+
+----------------------------------------------
+5. Calling Convention (Windows x64)
+------------------------------------
+Registers used for arguments:
+- RCX, RDX, R8, R9 = first four arguments
+- Additional arguments go on stack ([rsp+20h], etc.)
+
+Return value:
+- Stored in RAX
+
+Shadow space:
+- 32 bytes of stack space reserved before any call
+
+----------------------------------------------
+6. Comments
+----------
+; <comment>
+- MASM comment syntax (not used in this code but supported)
+
+----------------------------------------------
+7. Miscellaneous
+----------------
+lea r9, <label>
+- Load address of a string or data into a register for passing to functions.
+
+test ax, 8000h
+- Used to check if a specific key is pressed in GetAsyncKeyState (bitmask).
+
+je handle_paint
+- Conditional jump based on a previous cmp/test.
+
+xor rax, rax
+- Set RAX to 0 (fast zeroing trick).
+
+mov rsp, rbp
+- Restore stack pointer from base pointer (used at end of aligned procedures).
+
+=============================================================================================
+
+=============================================================================================
+MASM x64 Quick Reference: Stack Alignment, Pointers, Shadow Space, and Data Definitions
+=======================================================================================
+
+1. STACK ALIGNMENT
+------------------
+- In x64 Windows, the **stack must be 16-byte aligned** at the point of any function call.
+- Misalignment causes crashes when calling APIs or using SSE instructions.
+
+Example:
+---------
+Before a function call:
+    - Ensure RSP is aligned to 16 bytes.
+    - If you're using `sub rsp, ...` to allocate locals, align to a multiple of 16.
+
+Typical function setup:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 40h        ; 32 bytes shadow space + 32 bytes locals = aligned
+
+After the call or before return:
+    add rsp, 40h
+    pop rbp
+    ret
+
+TIP:
+    Use `and rsp, -16` to align to 16-byte boundary if needed.
+
+2. SHADOW SPACE
+---------------
+- Shadow space is a **32-byte area (4 × 8 bytes)** reserved on the stack by the caller for the callee.
+- Required by Windows x64 ABI.
+- Must always be reserved **before calling any function**, including Windows API functions.
+
+Example:
+---------
+sub rsp, 20h     ; Shadow space only (no locals)
+mov rcx, arg1
+mov rdx, arg2
+call SomeFunction
+add rsp, 20h
+
+Shadow space layout:
+    [rsp+00h] ? 1st argument (if passed on stack)
+    [rsp+08h] ? 2nd argument (if passed on stack)
+    [rsp+10h] ? 3rd argument
+    [rsp+18h] ? 4th argument
+
+Even if your function only uses registers, you still must reserve shadow space.
+
+3. POINTERS
+-----------
+- A pointer is simply an address stored in a register or variable.
+- You use `lea` to get an address (pointer), `mov` to dereference or copy a pointer.
+
+Example:
+---------
+    lea rax, myVar       ; Load address of myVar into RAX
+    mov rbx, [rax]       ; Load value pointed to by RAX into RBX
+    mov [rax], rcx       ; Store RCX value into memory at address in RAX
+
+Types of pointers:
+    - `byte ptr`, `word ptr`, `dword ptr`, `qword ptr` are used to specify pointer sizes.
+
+    Example:
+        mov al, byte ptr [rcx]     ; Load byte from RCX
+        mov rax, qword ptr [rbx]   ; Load 8 bytes from memory at RBX
+
+4. DEFINING DATA
+----------------
+MASM supports defining bytes, words, dwords, qwords for use in code and data sections.
+
+Directives:
+------------
+- `db` (Define Byte)         ? 1 byte
+- `dw` (Define Word)         ? 2 bytes
+- `dd` (Define Double Word)  ? 4 bytes
+- `dq` (Define Quad Word)    ? 8 bytes
+
+Examples:
+----------
+    myByte      db  10
+    myWord      dw  1234h
+    myDword     dd  0FFFFFFFFh
+    myQword     dq  1122334455667788h
+
+    message     db "Hello, World!", 0     ; Null-terminated string
+
+Arrays:
+    numbers     dd 10, 20, 30, 40
+    strings     db "One",0, "Two",0, "Three",0
+
+Offsets (for strings, addresses):
+    lea rdx, message        ; Load address of 'message' into RDX
+
+Alignment:
+- Use `align 16` if necessary to align data on specific boundaries.
+
+5. STACK VS. HEAP VS. DATA
+--------------------------
+- Stack: Temporary local storage, accessed via `rsp`, grows downward.
+- Heap: Dynamically allocated memory (via Windows APIs like `HeapAlloc`).
+- Data segment: Statically declared data using `db`, `dq`, etc.
+
+6. LOCAL VARIABLES ON STACK
+---------------------------
+Use `sub rsp, <size>` to allocate space for local variables.
+
+Example:
+    sub rsp, 20h
+    mov [rsp+10h], rax      ; Save local variable
+    ...
+    add rsp, 20h
+
+Note:
+    Avoid writing directly to RSP unless you're aligning or adjusting the stack.
+
+=======================================================================================
+
